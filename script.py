@@ -1,4 +1,5 @@
 import os
+import argparse
 from datetime import timedelta
 import polars as pl
 
@@ -42,7 +43,7 @@ def split_train_test(df_clickstream: pl.DataFrame, df_event: pl.DataFrame):
     return df_train, df_eval
 
 
-def get_als_pred(users, nodes, user_to_pred):
+def get_als_pred(users, nodes, user_to_pred, factors, iterations):
     user_ids = users.unique().to_list()
     item_ids = nodes.unique().to_list()
 
@@ -58,8 +59,8 @@ def get_als_pred(users, nodes, user_to_pred):
     sparse_matrix = csr_matrix((values, (rows, cols)), shape=(len(user_ids), len(item_ids)))
 
     model = implicit.als.AlternatingLeastSquares(
-        iterations=1,
-        factors=60,
+        iterations=iterations,
+        factors=factors,
         use_gpu=False,
     )
     model.fit(sparse_matrix)
@@ -87,11 +88,11 @@ def get_als_pred(users, nodes, user_to_pred):
     return df_pred
 
 
-def train(df_train: pl.DataFrame, df_eval: pl.DataFrame):
+def train(df_train: pl.DataFrame, df_eval: pl.DataFrame, factors, iterations):
     users = df_train["cookie"]
     nodes = df_train["node"]
     eval_users = df_eval['cookie'].unique().to_list()
-    df_pred = get_als_pred(users, nodes, eval_users)
+    df_pred = get_als_pred(users, nodes, eval_users, factors, iterations)
     return df_pred
 
 
@@ -113,26 +114,31 @@ def recall_at(df_true, df_pred, k=40):
     )['value'].mean()
 
 
-EXPERIMENT_NAME = "homework-admastryukov"
-
-
 def main():
-    mlflow.set_tracking_uri(
-        os.environ.get('MLFLOW_TRACKING_URI')
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--experiment-name', required=True)
+    parser.add_argument('--run-name',        default=None)
+    parser.add_argument('--factors',         type=int, default=60)
+    parser.add_argument('--iterations',      type=int, default=1)
+    args = parser.parse_args()
 
-    if not mlflow.get_experiment_by_name(EXPERIMENT_NAME):
-        mlflow.create_experiment(EXPERIMENT_NAME, artifact_location='mlflow-artifacts:/')
+    mlflow.set_tracking_uri(os.environ.get('MLFLOW_TRACKING_URI'))
 
-    mlflow.set_experiment(EXPERIMENT_NAME)
+    if not mlflow.get_experiment_by_name(args.experiment_name):
+        mlflow.create_experiment(args.experiment_name, artifact_location='mlflow-artifacts:/')
+    mlflow.set_experiment(args.experiment_name)
 
-    with mlflow.start_run():
+    with mlflow.start_run(run_name=args.run_name):
+        mlflow.log_params({
+            'als_factors': args.factors,
+            'als_iterations': args.iterations,
+        })
+
         df_test_users, df_clickstream, df_event = get_data()
         df_train, df_eval = split_train_test(df_clickstream, df_event)
-        df_pred = train(df_train, df_eval)
+        df_pred = train(df_train, df_eval, args.factors, args.iterations)
 
         metric = recall_at(df_eval, df_pred, k=40)
-
         mlflow.log_metric('Recall_40', metric)
 
 
